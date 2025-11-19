@@ -147,11 +147,16 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
 
       setMatches(filtered);
     } catch (err) {
-      console.error(err);
-      setError("Something went wrong while analyzing the photo.");
+        console.error("Face analysis error:", err);
+        setError(
+            err instanceof Error
+            ? `Error: ${err.message}`
+            : "Something went wrong while analyzing the photo."
+        );
     } finally {
-      setIsAnalyzing(false);
-    }
+  setIsAnalyzing(false);
+}
+
   }
 
   return (
