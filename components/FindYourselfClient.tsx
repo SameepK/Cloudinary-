@@ -1,5 +1,5 @@
+"use client";
 
-"use client";  
 import React, { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -44,13 +44,14 @@ async function computeEmbeddingFromUrl(
           .detectSingleFace(
             img,
             new faceapi.TinyFaceDetectorOptions({
-              inputSize: 160,
-              scoreThreshold: 0.5,
+              inputSize: 320,
+              scoreThreshold: 0.4,
             }),
           )
           .withFaceLandmarks()
           .withFaceDescriptor();
 
+        // Only require that a face was detected
         if (!detection) {
           resolve(null);
         } else {
@@ -63,6 +64,39 @@ async function computeEmbeddingFromUrl(
 
     img.onerror = (err) => reject(err);
   });
+}
+
+async function computeEmbeddingFromFile(
+  file: File,
+): Promise<Float32Array | null> {
+  if (typeof window === "undefined") return null;
+
+  await ensureModelsLoaded();
+
+  try {
+    const img = await faceapi.bufferToImage(file);
+
+    const detection = await faceapi
+      .detectSingleFace(
+        img,
+        new faceapi.TinyFaceDetectorOptions({
+          inputSize: 320,
+          scoreThreshold: 0.4,
+        }),
+      )
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!detection) {
+      return null;
+    }
+
+    // console.log("upload detection score:", detection.detection.score);
+    return detection.descriptor;
+  } catch (err) {
+    console.error("computeEmbeddingFromFile error:", err);
+    return null;
+  }
 }
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -82,6 +116,7 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 
 const FindYourselfClient: React.FC<Props> = ({ images }) => {
   const [uploadedSrc, setUploadedSrc] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [matches, setMatches] = useState<ImageProps[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -94,12 +129,14 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
 
     setError(null);
     setMatches([]);
-    const url = URL.createObjectURL(file);
+
+    setUploadedFile(file); // keep File for face-api
+    const url = URL.createObjectURL(file); // preview
     setUploadedSrc(url);
   }
 
   async function handleAnalyze() {
-    if (!uploadedSrc) {
+    if (!uploadedFile) {
       setError("Please upload a photo first.");
       return;
     }
@@ -109,7 +146,8 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
       setError(null);
       setMatches([]);
 
-      const userEmbedding = await computeEmbeddingFromUrl(uploadedSrc);
+      // 1. Embedding for uploaded face (use File-based version)
+      const userEmbedding = await computeEmbeddingFromFile(uploadedFile);
       if (!userEmbedding) {
         setError(
           "Could not detect a face in the uploaded photo. Try a clearer, front-facing image.",
@@ -117,6 +155,7 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
         return;
       }
 
+      // 2. Compute embeddings for gallery images (first N for performance)
       const limit = Math.min(images.length, 120);
       const scored: { img: ImageProps; score: number }[] = [];
 
@@ -133,30 +172,48 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
         scored.push({ img, score });
       }
 
-      const threshold = 0.6;
-      const filtered = scored
-        .filter((x) => x.score >= threshold)
-        .sort((a, b) => b.score - a.score)
-        .map((x) => x.img);
-
-      if (filtered.length === 0) {
+      // 2.5 Guard: if nothing could be analyzed
+      if (scored.length === 0) {
         setError(
-          "No strong matches found. For the demo, try uploading one of the gallery photos itself.",
+          "No faces from the gallery could be analyzed. Try again or refresh the page.",
         );
+        setMatches([]);
+        return;
       }
 
-      setMatches(filtered);
-    } catch (err) {
-        console.error("Face analysis error:", err);
-        setError(
-            err instanceof Error
-            ? `Error: ${err.message}`
-            : "Something went wrong while analyzing the photo."
-        );
-    } finally {
-  setIsAnalyzing(false);
-}
+// 3. Sort by similarity, highest first
+        scored.sort((a, b) => b.score - a.score);
 
+// 4. Look at the best match and the margin to the second best
+        const best = scored[0];
+        const second = scored[1];
+        const s = best.score;
+        const margin = second ? s - second.score : 1;
+
+// Heuristic:
+// - Require a VERY high similarity (>= 0.9).
+// - Require that it's clearly better than the second best (margin >= 0.03).
+//   If not, we call it "no clear match" instead of guessing.
+  let finalMatches: ImageProps[] = [];
+  if (s >= 0.9 && margin >= 0.03) {
+    // confident: show the best match (or top 2)
+    finalMatches = [best.img];
+    setError(null);
+  } else {
+    setError("No clear match found in the gallery for this photo.");
+    finalMatches = [];
+  }
+  setMatches(finalMatches);
+    } catch (err) {
+      console.error("Face analysis error:", err);
+      setError(
+        err instanceof Error
+          ? `Error: ${err.message}`
+          : "Something went wrong while analyzing the photo.",
+      );
+    } finally {
+      setIsAnalyzing(false);
+    }
   }
 
   return (
@@ -201,15 +258,13 @@ const FindYourselfClient: React.FC<Props> = ({ images }) => {
           )}
           <button
             onClick={handleAnalyze}
-            disabled={isAnalyzing || !uploadedSrc}
+            disabled={isAnalyzing || !uploadedFile}
             className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:bg-white/40"
           >
             {isAnalyzing ? "Analyzing…" : "Find my photos"}
           </button>
           {error && (
-            <p className="mt-2 text-sm text-red-400">
-              {error}
-            </p>
+            <p className="mt-2 text-sm text-red-400">{error}</p>
           )}
         </div>
 
