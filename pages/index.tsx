@@ -77,7 +77,7 @@ const Home: NextPage = ({ images }: { images: ImageProps[] }) => {
             href="/find-yourself"
             className="pointer z-10 mt-2 rounded-lg border border-white/80 bg-transparent px-3 py-2 text-sm font-semibold text-white transition hover:bg-white hover:text-black md:mt-3"
             >
-              Try “Find Yourself” feature
+              Find Yourself
             </Link>
 
           </div>
